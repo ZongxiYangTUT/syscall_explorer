@@ -1,0 +1,115 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Syscall Explorer</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101517;color:#ecf3ee;font:15px system-ui,sans-serif}header{padding:18px 5vw;border-bottom:1px solid #374044;display:flex;align-items:center;gap:12px;font-weight:bold}header b{background:#b7ef68;color:#152015;padding:4px 8px;border-radius:5px;font: bold 18px monospace}header small{margin-left:auto;color:#a5b0ac}main{max-width:1450px;margin:auto;padding:32px 5vw}h1{font-size:32px;margin:0 0 6px}p,small{color:#9baaa5}section{display:flex;gap:12px;margin:24px 0}article,.panel{background:#192022;border:1px solid #354044;border-radius:10px}article{padding:16px 20px;flex:1}strong{display:block;font: bold 27px monospace;margin-top:8px}.grid{display:grid;grid-template-columns:2.4fr 1fr;gap:16px}.panel{padding:18px;min-width:0}h2{font-size:17px;margin:0 0 16px}#map{position:relative;height:46vh;min-height:300px;background:#141b1c;border-radius:5px;overflow:hidden}.tile{position:absolute;border:2px solid #192022;border-radius:6px;overflow:hidden;color:#17221e;padding:0;display:flex;flex-direction:column;justify-content:center;align-items:center;font:bold 15px monospace}.tile span{font-size:12px;font-weight:normal}#rows{max-height:max(300px,46vh);overflow:auto}.row{display:flex;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #303b3b;font:14px monospace}.row i{width:9px;height:9px;border-radius:2px}.row label{margin-left:auto}footer{font-size:12px;color:#9baaa5;margin-top:14px}@media(max-width:750px){.grid{grid-template-columns:1fr}article{padding:12px}section{gap:5px}strong{font-size:20px}}
+
+.controls{margin:16px 0;padding:16px;background:#192022;border:1px solid #354044;border-radius:10px}.bar,form{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.bar{margin-bottom:12px}.bar button:last-child{margin-left:auto}select,input,button,dialog{background:#11191a;color:#ecf3ee;border:1px solid #475756;border-radius:5px;padding:8px;font:inherit}input{min-width:0}button{cursor:pointer}button[aria-pressed=true],form button[type=submit]{background:#b7ef68;color:#152015}button:disabled{opacity:.55;cursor:default}[hidden]{display:none!important}dialog{width:min(530px,92vw)}dialog::backdrop{background:#0009}#files{max-height:55vh;overflow:auto;display:grid;gap:4px}#files button{text-align:left;overflow-wrap:anywhere}#folder{overflow-wrap:anywhere}#message,.error{color:#ffc38e}
+</style><header><b>›_</b> Syscall Explorer <small id="status">正在连接</small></header><main><h1>系统调用监测</h1><small id="target"></small><div class="controls"><div class="bar"><button id="launchTab" aria-pressed="true">启动程序</button><button id="attachTab" aria-pressed="false">附加进程</button><button id="stop" disabled>停止当前采集</button></div>
+<form id="launch"><input id="program" aria-label="程序路径" placeholder="可执行文件路径或命令名" required><button type="button" id="browse">浏览本机文件</button><input id="arguments" aria-label="程序参数" placeholder="程序参数（可选）"><button type="submit">启动并采集</button></form>
+<form id="attach" hidden><input id="filter" type="search" aria-label="搜索进程名称" placeholder="搜索进程名称"><select id="pid" aria-label="本机进程" required></select><button type="button" id="refresh">刷新列表</button><button type="submit">附加并采集</button></form>
+<small id="message" role="alert"></small><small class="error" id="traceError" role="status"></small></div>
+<dialog id="picker"><div class="bar"><b>选择本机可执行文件</b><button id="close">关闭</button></div><p id="folder"></p><div id="files"></div></dialog><section><article>调用总数<strong id="total">—</strong></article><article>调用种类<strong id="types">—</strong></article><article>采集时长<strong id="elapsed">—</strong></article></section><div class="grid"><div class="panel"><h2>系统调用矩形树图</h2><div id="map"></div><footer>面积表示累计调用次数 · 悬停查看占比</footer></div><div class="panel"><h2>调用排行</h2><div id="rows"></div></div></div></main>
+<script>
+const el=id=>document.getElementById(id), palette=['#afe07a','#83cbb3','#dfbd78','#94bfe2','#c3a4da','#d69e8e','#a3cd8f'];
+let processes=[];
+function filterProcesses(){
+ const select=el('pid'), previous=select.value;
+ const query=el('filter').value.trim().toLowerCase();
+ const matches=processes.filter(p=>p.name.toLowerCase().includes(query)||String(p.pid).includes(query));
+ select.replaceChildren(new Option(matches.length?'选择本机进程':'没有匹配的进程',''));
+ for(const process of matches){
+  const option=new Option(process.name+' (PID '+process.pid+')',process.pid+'@'+process.started);
+  select.add(option);
+ }
+ if(matches.some(p=>p.pid+'@'+p.started===previous))select.value=previous;
+}
+async function loadProcesses(){
+ if(el('refresh').disabled)return;
+ el('refresh').disabled=true;
+ try{
+  const response=await fetch('/processes');
+  if(!response.ok)throw Error();
+  processes=await response.json();
+  filterProcesses();
+ }catch{
+  processes=[];filterProcesses();el('message').textContent='读取进程列表失败，请刷新重试。';
+ }finally{el('refresh').disabled=false}
+}
+el('refresh').onclick=()=>{el('message').textContent='';loadProcesses()};
+el('filter').oninput=filterProcesses;
+for(const mode of ['launch','attach']){
+ el(mode+'Tab').onclick=()=>{
+  for(const name of ['launch','attach']){
+   el(name).hidden=name!==mode;
+   el(name+'Tab').setAttribute('aria-pressed',String(name===mode));
+  }
+  el('message').textContent='';
+  if(mode==='attach')loadProcesses();
+ };
+ el(mode).onsubmit=event=>{
+  event.preventDefault();
+  const [pid,started]=el('pid').value.split('@');
+  action(mode,mode==='launch'?{program:el('program').value,arguments:el('arguments').value}:{pid,started});
+ };
+}
+async function action(mode,data){
+ try{
+  const response=await fetch('/'+mode,{method:'POST',headers:{'Content-Type':'application/json','X-Explorer':'1'},body:JSON.stringify(data)});
+  const result=await response.json();
+  el('message').textContent=result.error||'';
+ }catch{el('message').textContent='请求失败，请检查服务连接。'}
+}
+el('stop').onclick=()=>action('stop',{});
+async function showFolder(path){
+ try{
+  const response=await fetch('/files?dir='+encodeURIComponent(path));
+  const result=await response.json();
+  if(!response.ok)throw Error(result.error);
+  el('folder').textContent=result.folder;
+  const parent=document.createElement('button');
+  parent.textContent='↑ 上一级';parent.onclick=()=>showFolder(result.parent);
+  el('files').replaceChildren(parent,...result.entries.map(item=>{
+   const button=document.createElement('button');
+   button.textContent=item.name+(item.directory?'/':'');
+   button.onclick=()=>{
+    if(item.directory)return showFolder(item.path);
+    el('program').value=item.path;el('picker').close();
+   };
+   return button;
+  }));
+  if(!el('picker').open)el('picker').showModal();
+ }catch(error){el('picker').close();el('message').textContent=error.message}
+}
+el('browse').onclick=()=>showFolder('.');
+el('close').onclick=()=>el('picker').close();
+function color(name){let hash=0;for(const c of name)hash=(hash*31+c.charCodeAt(0))>>>0;return palette[hash%palette.length]}
+let entries=[],sum=0;
+function draw(){
+ const map=el('map');map.replaceChildren();
+ function split(items,n,x,y,w,h){
+  if(items.length===1){
+   const [name,count]=items[0],tile=document.createElement('div');tile.className='tile';
+   Object.assign(tile.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px',background:color(name)});
+   tile.title=name+' · '+count+' 次 · '+(100*count/sum).toFixed(1)+'%';
+   if(w>name.length*9+8 && h>22){tile.textContent=name;if(h>46){const sub=document.createElement('span');sub.textContent=count.toLocaleString()+' 次';tile.append(sub)}}
+   map.append(tile);return;
+  }
+  let i=1,a=items[0][1];while(i<items.length-1 && Math.abs(n/2-a-items[i][1])<Math.abs(n/2-a)){a+=items[i++][1]}
+  const r=a/n,wide=w>=h;
+  split(items.slice(0,i),a,x,y,wide?w*r:w,wide?h:h*r);
+  split(items.slice(i),n-a,wide?x+w*r:x,wide?y:y+h*r,wide?w*(1-r):w,wide?h:h*(1-r));
+ }
+ if(sum)split(entries,sum,0,0,map.clientWidth,map.clientHeight);else map.textContent='等待系统调用';
+}
+async function update(){
+ try{
+ const d=await (await fetch('/api')).json();entries=Object.entries(d.counts).sort((a,b)=>b[1]-a[1]);sum=entries.reduce((s,e)=>s+e[1],0);
+ el('total').textContent=sum.toLocaleString();el('types').textContent=entries.length;el('elapsed').textContent=d.seconds.toFixed(1)+' s';el('target').textContent='当前目标 · '+d.target;
+ el('traceError').textContent=d.error;
+ el('stop').disabled=d.code!==null||d.stopped;
+ el('stop').textContent=d.attached?'分离进程':'结束目标程序';
+ el('status').textContent=d.stopped?'已停止采集':d.code===null?'● 实时采集中':'采集结束 · 退出码 '+d.code;
+ el('rows').replaceChildren(...entries.map(([name,n])=>{const row=document.createElement('div'),i=document.createElement('i'),v=document.createElement('label');row.className='row';i.style.background=color(name);v.textContent=n.toLocaleString();row.append(i,name,v);return row}));draw();
+ }catch{el('status').textContent='连接中断 · 正在重连'}setTimeout(update,500);
+}
+new ResizeObserver(draw).observe(el('map'));update();
+</script></html>
